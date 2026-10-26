@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="gu">
+<head>
+  <meta charset="UTF-8">
+  <title>સ્માર્ટ ફેસ હાજરી સિસ્ટમ - ચારી પ્રાથમિક શાળા</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #eef2f7; margin: 0; padding: 20px; }
+    .card { background: white; max-width: 650px; margin: auto; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    video { border-radius: 10px; border: 3px solid #007bff; width: 100%; max-width: 500px; height: auto; }
+    #status { font-size: 18px; font-weight: bold; margin-top: 15px; color: #333; }
+    #lastAttendance { font-size: 20px; font-weight: bold; color: #28a745; margin-top: 10px; }
+    .time-badge { background: #ffc107; padding: 5px 12px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 15px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>ચારી પ્રાથમિક શાળા - ઓનલાઈન હાજરી</h2>
+  <div class="time-badge">હાજરી સમય: સવારે ૧૧:૧૦ સુધી</div>
+  <br>
+  <video id="video" autoplay muted playsinline></video>
+  <div id="status">ફેસ મોડેલ અને વિદ્યાર્થી ડેટા લોડ થઈ રહ્યો છે...</div>
+  <div id="lastAttendance"></div>
+</div>
+
+<script>
+  const SCRIPT_URL = "તમારી_GOOGLE_WEB_APP_URL_અહીં_મૂકો";
+  const video = document.getElementById('video');
+  const statusDiv = document.getElementById('status');
+  const lastAttendanceDiv = document.getElementById('lastAttendance');
+
+  const markedToday = new Set();
+  let faceMatcher = null;
+
+  // ૧. ગુજરાતીમાં અવાજ બોલવાનું ફંક્શન
+  function speakGujarati(text) {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // જૂનો અવાજ રોકવો
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'gu-IN'; // ગુજરાતી અવાજ
+      utterance.rate = 0.9;     // બોલવાની સામાન્ય ઝડપ
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  }
+
+  // ૨. સમય મર્યાદા ચકાસવી (૧૧:૧૦ વાગ્યા સુધી)
+  function isAttendanceOpen() {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    
+    // સવારે ૧૧:૧૦ (11 કલાક અને 10 મિનિટ)
+    if (hours > 11 || (hours === 11 && minutes > 10)) {
+      return false;
+    }
+    return true;
+  }
+
+  // ૩. કેમેરા ચાલુ કરવો
+  function startCamera() {
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+      .then(stream => { video.srcObject = stream; })
+      .catch(err => { statusDiv.innerText = "કેમેરા ઓપન કરવામાં સમસ્યા!"; });
+  }
+
+  // ૪. ફેસ મોડેલ અને ગૂગલ શીટમાંથી ફેસ ડેટા લોડ કરવો
+  async function init() {
+    if (!isAttendanceOpen()) {
+      statusDiv.innerHTML = "<span style='color:red;'>હાજરી પૂરવાનો સમય (૧૧:૧૦) પૂર્ણ થઈ ગયો છે!</span>";
+      return;
+    }
+
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri('https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js@master/weights'),
+      faceapi.nets.faceLandmark68Net.loadFromUri('https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js@master/weights'),
+      faceapi.nets.faceRecognitionNet.loadFromUri('https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js@master/weights')
+    ]);
+
+    statusDiv.innerText = "વિદ્યાર્થીઓનો ફેસ ડેટા લોડ થઈ રહ્યો છે...";
+    
+    try {
+      const res = await fetch(`${SCRIPT_URL}?action=getRegisteredFaces`);
+      const data = await res.json();
+      
+      const labeledDescriptors = data.map(item => {
+        return new faceapi.LabeledFaceDescriptors(item.label, [new Float32Array(item.descriptor)]);
+      });
+
+      faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.55);
+      startCamera();
+      statusDiv.innerText = "સિસ્ટમ શરૂ છે. વિદ્યાર્થીઓએ કેમેરા સામે ઊભા રહેવું.";
+      startRecognitionLoop();
+    } catch (e) {
+      statusDiv.innerText = "વિદ્યાર્થીઓનો ડેટા લાવવામાં ક્ષતિ આવી!";
+    }
+  }
+
+  // ૫. ફેસ ડિટેક્શન લૂપ (દર ૧.૫ સેકન્ડે)
+  function startRecognitionLoop() {
+    setInterval(async () => {
+      // સમય પૂરો થયો હોય તો બંધ કરી દેવું
+      if (!isAttendanceOpen()) {
+        statusDiv.innerHTML = "<span style='color:red;'>૧૧:૧૦ વાગી ગયા હોવાથી હાજરી બંધ થઈ ગઈ છે.</span>";
+        if (video.srcObject) {
+          video.srcObject.getTracks().forEach(track => track.stop());
+        }
+        return;
+      }
+
+      if (!faceMatcher) return;
+
+      const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+      if (detection) {
+        const match = faceMatcher.findBestMatch(detection.descriptor);
+        if (match.label !== 'unknown' && !markedToday.has(match.label)) {
+          recordAttendance(match.label);
+        }
+      }
+    }, 1500);
+  }
+
+  // ૬. હાજરી નોંધવી અને બોલાવવું
+  function recordAttendance(studentTag) {
+    markedToday.add(studentTag);
+    
+    // studentTag ફોર્મેટ: "અનુક્રમ_નામ"
+    const parts = studentTag.split('_');
+    const studentName = parts[1] || studentTag;
+
+    // અવાજ બોલશે: દા.ત. "પરમાર આર્યનભાઈ, હાજર"
+    const speechText = `${studentName}, હાજર`;
+    speakGujarati(speechText);
+
+    lastAttendanceDiv.innerText = `✔ ${studentName} - હાજર`;
+
+    // ગૂગલ શીટમાં એન્ટ્રી મોકલવી
+    fetch(SCRIPT_URL, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: "markAttendance",
+        studentTag: studentTag,
+        timestamp: new Date().toLocaleTimeString('gu-IN')
+      })
+    });
+  }
+
+  window.onload = init;
+</script>
+
+</body>
+</html>
